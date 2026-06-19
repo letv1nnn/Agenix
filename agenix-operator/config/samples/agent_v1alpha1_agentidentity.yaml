@@ -1,0 +1,17 @@
+apiVersion: agent.agenix.io/v1alpha1
+kind: AgentIdentity
+metadata:
+  labels:
+    app.kubernetes.io/name: agenix-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: weather-agent-identity
+  namespace: default
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: weather-agent
+  identity:
+    trustDomain: "example.org"
+    ttl: "24h"
+    autoRotate: true
