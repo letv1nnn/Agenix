@@ -49,6 +49,7 @@ type AgentIdentitySpec struct {
 	// identity holds the identity configuration
 	Identity IdentityConfig `json:"identity"`
 }
+
 // CertificateInfo holds details about the issued certificate
 type CertificateInfo struct {
 	SerialNumber string      `json:"serialNumber"`
