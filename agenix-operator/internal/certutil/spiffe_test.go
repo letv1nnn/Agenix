@@ -53,13 +53,13 @@ func TestParseSPIFFEID(t *testing.T) {
 	}
 
 	if td != trustDomainExample {
-		t.Fatalf("expected trust domain %q, got %q", trustDomainExample, td)
+		t.Errorf("expected trust domain %q, got %q", trustDomainExample, td)
 	}
 	if ns != "production" {
-		t.Fatalf("expected namespace %q, got %q", "production", ns)
+		t.Errorf("expected namespace %q, got %q", "production", ns)
 	}
 	if sa != "payment-agent" {
-		t.Fatalf("expected service account %q, got %q", "payment-agent", sa)
+		t.Errorf("expected service account %q, got %q", "payment-agent", sa)
 	}
 }
 
@@ -79,7 +79,6 @@ func TestParseSPIFFEID_InvalidFormat(t *testing.T) {
 			_, _, _, err := ParseSPIFFEID(testCase.id)
 			if err == nil {
 				t.Errorf("expected error for %q, got nil", testCase.id)
-
 			}
 		})
 	}
