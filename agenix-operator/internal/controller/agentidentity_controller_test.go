@@ -68,6 +68,7 @@ var _ = Describe("AgentIdentity Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, deployment) })
 
 			identity := &agentv1alpha1.AgentIdentity{
 				ObjectMeta: metav1.ObjectMeta{
@@ -81,6 +82,7 @@ var _ = Describe("AgentIdentity Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, identity) })
 
 			authority, err := ca.NewCA()
 			Expect(err).NotTo(HaveOccurred())
@@ -107,9 +109,6 @@ var _ = Describe("AgentIdentity Controller", func() {
 			condition := meta.FindStatusCondition(updated.Status.Conditions, "TargetFound")
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
-
-			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
-			Expect(k8sClient.Delete(ctx, deployment)).To(Succeed())
 		})
 
 		It("should set Error when Deployment is missing", func() {
@@ -125,6 +124,7 @@ var _ = Describe("AgentIdentity Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, identity) })
 
 			authority, err := ca.NewCA()
 			Expect(err).NotTo(HaveOccurred())
@@ -151,8 +151,6 @@ var _ = Describe("AgentIdentity Controller", func() {
 			condition := meta.FindStatusCondition(updated.Status.Conditions, "TargetFound")
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionFalse))
-
-			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
 		})
 	})
 })
