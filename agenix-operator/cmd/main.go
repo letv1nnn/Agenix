@@ -38,7 +38,10 @@ import (
 	agentv1alpha1 "github.com/Bobbins228/Agenix/agenix-operator/api/v1alpha1"
 	"github.com/Bobbins228/Agenix/agenix-operator/internal/ca"
 	"github.com/Bobbins228/Agenix/agenix-operator/internal/controller"
+
 	// +kubebuilder:scaffold:imports
+
+	podmutator "github.com/Bobbins228/Agenix/agenix-operator/internal/webhook"
 )
 
 var (
@@ -203,6 +206,12 @@ func main() {
 		setupLog.Error(err, "Failed to set up ready check")
 		os.Exit(1)
 	}
+
+	mgr.GetWebhookServer().Register("/mutate-pods", &webhook.Admission{
+		Handler: &podmutator.PodMutator{
+			Client: mgr.GetClient(),
+		},
+	})
 
 	setupLog.Info("Starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
