@@ -18,6 +18,10 @@ type PodMutator struct {
 	decoder admission.Decoder
 }
 
+func (m *PodMutator) InjectDecoder(d admission.Decoder) {
+	m.decoder = d
+}
+
 func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admission.Response {
 	// decode pod from the admission request
 	pod := &corev1.Pod{}
@@ -41,12 +45,7 @@ func (m *PodMutator) Handle(ctx context.Context, req admission.Request) admissio
 		return admission.Allowed("no matching AgentIdentity")
 	}
 
-	// TODO: if match is found, determine the secret name, and modify the pod
-	_ = agentIdentity // temp
-
-	if found {
-		return admission.Allowed("matching AgentIdentity found; mutation not implemented yet")
-	} // temp
+	mutatePod(pod, agentIdentity)
 
 	// return an admission response with JSON patch
 	marshaledPod, err := json.Marshal(pod)
@@ -98,4 +97,35 @@ func (m *PodMutator) findAgentIdentity(ctx context.Context, namespace, deploymen
 		}
 	}
 	return nil, false, nil // checked list, not found, nil error
+}
+
+func mutatePod(pod *corev1.Pod, ai *agentv1alpha1.AgentIdentity) {
+	volume := corev1.Volume{
+		Name: "agent-identity",
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: ai.Name + "-tls",
+			},
+		},
+	}
+	pod.Spec.Volumes = append(pod.Spec.Volumes, volume)
+
+	for i := range pod.Spec.Containers { // for every container
+		// add volume mount
+		mount := corev1.VolumeMount{
+			Name:      "agent-identity",
+			MountPath: "/var/run/agenix",
+			ReadOnly:  true,
+		}
+		pod.Spec.Containers[i].VolumeMounts = append(pod.Spec.Containers[i].VolumeMounts, mount)
+
+		// add env vars
+		envVars := []corev1.EnvVar{
+			{Name: "AGENIX_CERT_PATH", Value: "/var/run/agenix/tls.crt"},
+			{Name: "AGENIX_KEY_PATH", Value: "/var/run/agenix/tls.key"},
+			{Name: "AGENIX_CA_PATH", Value: "/var/run/agenix/ca.crt"},
+			{Name: "AGENIX_AGENT_ID", Value: ai.Status.AgentID},
+		}
+		pod.Spec.Containers[i].Env = append(pod.Spec.Containers[i].Env, envVars...)
+	}
 }
