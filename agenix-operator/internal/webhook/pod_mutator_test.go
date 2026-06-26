@@ -41,7 +41,7 @@ var _ = Describe("PodMutator", func() {
 	// Helper: creates a Pod owned by a Deployment (via ReplicaSet)
 	createPodWithOwner := func(namespace, deploymentName, hash string, containerCount int) *corev1.Pod {
 		containers := make([]corev1.Container, containerCount)
-		for i := 0; i < containerCount; i++ {
+		for i := range containerCount {
 			containers[i] = corev1.Container{
 				Name:  "container-" + string(rune('0'+i)),
 				Image: "nginx:latest",
@@ -217,7 +217,7 @@ var _ = Describe("PodMutator", func() {
 		expectedPod := pod.DeepCopy()
 		mutatePod(expectedPod, ai)
 
-		for i := 0; i < 2; i++ {
+		for i := range 2 {
 			container := expectedPod.Spec.Containers[i]
 			Expect(container.VolumeMounts).To(HaveLen(1))
 			Expect(container.VolumeMounts[0].MountPath).To(Equal("/var/run/agenix"))
