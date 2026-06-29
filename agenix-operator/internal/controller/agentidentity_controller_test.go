@@ -23,6 +23,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -49,6 +50,7 @@ var _ = Describe("AgentIdentity Controller", func() {
 			idempotentName     = "test-idempotent"
 			verifiedName       = "test-verified"
 			verifiedDeployment = "verified-deployment"
+			ownerName          = "test-owner"
 		)
 
 		ctx := context.Background()
@@ -313,6 +315,15 @@ var _ = Describe("AgentIdentity Controller", func() {
 			_, err = reconciler.Reconcile(ctx, req) // second pass
 			Expect(err).NotTo(HaveOccurred())
 
+			// Second reconcile: first one only adds finalizer and returns
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      missingName,
+					Namespace: resourceNamespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
 			updated := &agentv1alpha1.AgentIdentity{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      missingName,
@@ -389,6 +400,15 @@ var _ = Describe("AgentIdentity Controller", func() {
 
 			// Pass 2: create secret
 			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile: first one only adds finalizer and returns
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      recreateName,
+					Namespace: resourceNamespace,
+				},
+			})
 			Expect(err).NotTo(HaveOccurred())
 
 			secret := &corev1.Secret{}
@@ -478,6 +498,15 @@ var _ = Describe("AgentIdentity Controller", func() {
 			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
+			// Second reconcile: first one only adds finalizer and returns
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      idempotentName,
+					Namespace: resourceNamespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
 			updated := &agentv1alpha1.AgentIdentity{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      idempotentName,
@@ -525,7 +554,7 @@ var _ = Describe("AgentIdentity Controller", func() {
 
 			identity := &agentv1alpha1.AgentIdentity{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-owner",
+					Name:      ownerName,
 					Namespace: resourceNamespace,
 				},
 				Spec: agentv1alpha1.AgentIdentitySpec{
@@ -552,7 +581,16 @@ var _ = Describe("AgentIdentity Controller", func() {
 
 			_, err = reconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: types.NamespacedName{
-					Name:      "test-owner",
+					Name:      ownerName,
+					Namespace: resourceNamespace,
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile: first one only adds finalizer and returns
+			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      ownerName,
 					Namespace: resourceNamespace,
 				},
 			})
@@ -561,12 +599,221 @@ var _ = Describe("AgentIdentity Controller", func() {
 
 			secret := &corev1.Secret{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      "test-owner-tls",
+				Name:      ownerName + "-tls",
 				Namespace: resourceNamespace,
 			}, secret)).To(Succeed())
 
 			Expect(secret.OwnerReferences).To(HaveLen(1))
-			Expect(secret.OwnerReferences[0].Name).To(Equal("test-owner"))
+			Expect(secret.OwnerReferences[0].Name).To(Equal(ownerName))
+		})
+	})
+
+	Context("When handling finalizers and deletion", func() {
+		const (
+			resourceNamespace      = "default"
+			appLabel               = "app"
+			testApp                = "test"
+			finalizerTestName      = "test-finalizer-add"
+			finalizerDeployment    = "finalizer-deployment"
+			deletionTestName       = "test-deletion-cleanup"
+			deletionDeployment     = "deletion-deployment"
+			alreadyGoneTestName    = "test-already-gone"
+			alreadyGoneDeployment  = "already-gone-deployment"
+			finalizerRemovedName   = "test-finalizer-removed"
+			finalizerRemovedDeploy = "finalizer-removed-deployment"
+		)
+
+		ctx := context.Background()
+
+		newReconciler := func() *AgentIdentityReconciler {
+			authority, err := ca.NewCA()
+			Expect(err).NotTo(HaveOccurred())
+			return &AgentIdentityReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				CA:     authority,
+			}
+		}
+
+		createDeployment := func(name string) *appsv1.Deployment {
+			dep := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: resourceNamespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{appLabel: testApp},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{appLabel: testApp},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: testApp, Image: "busybox"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, dep) })
+			return dep
+		}
+
+		createIdentity := func(name, deploymentName string) *agentv1alpha1.AgentIdentity {
+			id := &agentv1alpha1.AgentIdentity{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      name,
+					Namespace: resourceNamespace,
+				},
+				Spec: agentv1alpha1.AgentIdentitySpec{
+					TargetRef: agentv1alpha1.TargetRef{
+						Name: deploymentName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, id)).To(Succeed())
+			return id
+		}
+
+		reqFor := func(name string) reconcile.Request {
+			return reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      name,
+					Namespace: resourceNamespace,
+				},
+			}
+		}
+
+		It("should add finalizer on first reconciliation", func() {
+			createDeployment(finalizerDeployment)
+			createIdentity(finalizerTestName, finalizerDeployment)
+			DeferCleanup(func() {
+				id := &agentv1alpha1.AgentIdentity{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{Name: finalizerTestName, Namespace: resourceNamespace}, id); err == nil {
+					id.Finalizers = nil
+					_ = k8sClient.Update(ctx, id)
+					_ = k8sClient.Delete(ctx, id)
+				}
+			})
+
+			reconciler := newReconciler()
+			_, err := reconciler.Reconcile(ctx, reqFor(finalizerTestName))
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &agentv1alpha1.AgentIdentity{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      finalizerTestName,
+				Namespace: resourceNamespace,
+			}, updated)).To(Succeed())
+			Expect(updated.Finalizers).To(ContainElement("agenix.io/identity-cleanup"))
+		})
+
+		It("should delete TLS Secret on AgentIdentity deletion", func() {
+			createDeployment(deletionDeployment)
+			createIdentity(deletionTestName, deletionDeployment)
+
+			reconciler := newReconciler()
+			// First reconcile: adds finalizer
+			_, err := reconciler.Reconcile(ctx, reqFor(deletionTestName))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile: normal flow (sets Pending)
+			_, err = reconciler.Reconcile(ctx, reqFor(deletionTestName))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Manually create TLS Secret (simulating 4b provisioning)
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deletionTestName + "-tls",
+					Namespace: resourceNamespace,
+				},
+				Type: corev1.SecretTypeTLS,
+				Data: map[string][]byte{
+					"tls.crt": []byte("fake-cert"),
+					"tls.key": []byte("fake-key"),
+					"ca.crt":  []byte("fake-ca"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			// Delete the AgentIdentity (sets DeletionTimestamp; finalizer prevents actual deletion)
+			identity := &agentv1alpha1.AgentIdentity{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: deletionTestName, Namespace: resourceNamespace}, identity)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
+
+			// Reconcile: should handle deletion, delete Secret, remove finalizer
+			_, err = reconciler.Reconcile(ctx, reqFor(deletionTestName))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify Secret is gone
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      deletionTestName + "-tls",
+				Namespace: resourceNamespace,
+			}, &corev1.Secret{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+
+			// Verify AgentIdentity is gone
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      deletionTestName,
+				Namespace: resourceNamespace,
+			}, &agentv1alpha1.AgentIdentity{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should handle deletion cleanly when Secret is already gone", func() {
+			createDeployment(alreadyGoneDeployment)
+			createIdentity(alreadyGoneTestName, alreadyGoneDeployment)
+
+			reconciler := newReconciler()
+			_, err := reconciler.Reconcile(ctx, reqFor(alreadyGoneTestName))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Delete without creating any Secret — nothing to clean up
+			identity := &agentv1alpha1.AgentIdentity{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: alreadyGoneTestName, Namespace: resourceNamespace}, identity)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, identity)).To(Succeed())
+
+			_, err = reconciler.Reconcile(ctx, reqFor(alreadyGoneTestName))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify AgentIdentity is gone (no error from missing Secret)
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      alreadyGoneTestName,
+				Namespace: resourceNamespace,
+			}, &agentv1alpha1.AgentIdentity{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should remove finalizer after successful cleanup", func() {
+			createDeployment(finalizerRemovedDeploy)
+			createIdentity(finalizerRemovedName, finalizerRemovedDeploy)
+
+			reconciler := newReconciler()
+			// Add finalizer
+			_, err := reconciler.Reconcile(ctx, reqFor(finalizerRemovedName))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify finalizer is present before deletion
+			updated := &agentv1alpha1.AgentIdentity{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: finalizerRemovedName, Namespace: resourceNamespace}, updated)).To(Succeed())
+			Expect(updated.Finalizers).To(ContainElement("agenix.io/identity-cleanup"))
+
+			// Delete CR
+			Expect(k8sClient.Delete(ctx, updated)).To(Succeed())
+
+			// Reconcile handles deletion and removes finalizer
+			_, err = reconciler.Reconcile(ctx, reqFor(finalizerRemovedName))
+			Expect(err).NotTo(HaveOccurred())
+
+			// CR being gone proves finalizer was removed — K8s won't delete a resource with active finalizers
+			err = k8sClient.Get(ctx, types.NamespacedName{
+				Name:      finalizerRemovedName,
+				Namespace: resourceNamespace,
+			}, &agentv1alpha1.AgentIdentity{})
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
 		})
 	})
 })

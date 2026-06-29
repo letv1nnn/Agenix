@@ -1,0 +1,18 @@
+# This configuration teaches kustomize how to rewrite cert-manager resources.
+nameReference:
+- kind: Issuer
+  group: cert-manager.io
+  fieldSpecs:
+  - kind: Certificate
+    group: cert-manager.io
+    path: spec/issuerRef/name
+
+namespace:
+- kind: Certificate
+  group: cert-manager.io
+  path: metadata/namespace
+  create: false
+- kind: Issuer
+  group: cert-manager.io
+  path: metadata/namespace
+  create: false
