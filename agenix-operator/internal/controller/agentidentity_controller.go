@@ -34,7 +34,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	log "sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentv1alpha1 "github.com/Bobbins228/Agenix/agenix-operator/api/v1alpha1"
 	"github.com/Bobbins228/Agenix/agenix-operator/internal/ca"
@@ -90,7 +90,7 @@ func SanitizeSPIFFEIDForLabel(spiffeID string) string {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.24.1/pkg/reconcile
 func (r *AgentIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := logf.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// Fetch the AgentIdentity CR
 	identity := &agentv1alpha1.AgentIdentity{}
@@ -261,7 +261,7 @@ func (r *AgentIdentityReconciler) reportPhaseError(
 	identity *agentv1alpha1.AgentIdentity,
 	conditionType, reason, message string,
 ) (ctrl.Result, error) {
-	logger := logf.FromContext(ctx)
+	logger := log.FromContext(ctx)
 	identity.Status.Phase = phaseError
 	SetCondition(
 		&identity.Status.Conditions,
@@ -287,7 +287,7 @@ func (r *AgentIdentityReconciler) reconcileExistingSecret(
 	secret *corev1.Secret,
 	spiffeID string,
 ) (ctrl.Result, bool, error) {
-	logger := logf.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	block, _ := pem.Decode(secret.Data["tls.crt"])
 	if block == nil {
@@ -349,7 +349,7 @@ func (r *AgentIdentityReconciler) reconcileExistingSecret(
 }
 
 func (r *AgentIdentityReconciler) handleDeletion(ctx context.Context, ai *agentv1alpha1.AgentIdentity) (ctrl.Result, error) {
-	logger := logf.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// deleting the tls secret
 	secretName, secret := ai.Name+"-tls", &corev1.Secret{}
@@ -393,7 +393,7 @@ func (r *AgentIdentityReconciler) verifyAndUpdateStatus(
 	expectedSPIFFEID string,
 	certInfo *agentv1alpha1.CertificateInfo,
 ) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
+	log := log.FromContext(ctx)
 
 	result, err := verify.ValidateIdentity(certPEM, caCertPEM, expectedSPIFFEID)
 	if err != nil {
