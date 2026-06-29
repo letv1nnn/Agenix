@@ -107,9 +107,11 @@ func (m *PodMutator) findAgentIdentity(ctx context.Context, namespace, deploymen
 	return nil, false, nil // checked list, not found, nil error
 }
 
+const vName = "agent-identity"
+
 func hasAgentIdentityVolume(pod *corev1.Pod) bool {
 	for _, v := range pod.Spec.Volumes {
-		if v.Name == "agent-identity" {
+		if v.Name == vName {
 			return true
 		}
 	}
@@ -118,7 +120,7 @@ func hasAgentIdentityVolume(pod *corev1.Pod) bool {
 
 func mutatePod(pod *corev1.Pod, ai *agentv1alpha1.AgentIdentity) {
 	volume := corev1.Volume{
-		Name: "agent-identity",
+		Name: vName,
 		VolumeSource: corev1.VolumeSource{
 			Secret: &corev1.SecretVolumeSource{
 				SecretName: ai.Name + "-tls",
@@ -130,7 +132,7 @@ func mutatePod(pod *corev1.Pod, ai *agentv1alpha1.AgentIdentity) {
 	for i := range pod.Spec.Containers { // for every container
 		// add volume mount
 		mount := corev1.VolumeMount{
-			Name:      "agent-identity",
+			Name:      vName,
 			MountPath: "/var/run/agenix",
 			ReadOnly:  true,
 		}
