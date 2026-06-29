@@ -34,7 +34,6 @@ func VerifyCertificateChain(certPEM, caCertPEM []byte) error {
 		return err
 	}
 
-	// create x509.CertPool with CA cert
 	caPool := x509.NewCertPool()
 	caPool.AddCert(parsedCaCert)
 
@@ -82,18 +81,13 @@ type VerificationResult struct {
 func ValidateIdentity(certPEM, caCertPEM []byte, expectedSPIFFEID string) (*VerificationResult, error) {
 	result := &VerificationResult{}
 
-	cert, err := parseCertPEM(certPEM)
-	if err != nil {
-		return nil, err
-	}
-	result.ExpiresAt = cert.NotAfter
-	result.IsExpired = time.Now().After(cert.NotAfter)
-
-	// parse leaf cert from PEM
+	// parse leaf cert from pem
 	leafCert, err := parseCertPEM(certPEM)
 	if err != nil {
 		return nil, err
 	}
+	result.ExpiresAt = leafCert.NotAfter
+	result.IsExpired = time.Now().After(leafCert.NotAfter)
 
 	// parse ca certificate from pem
 	parsedCaCert, err := parseCertPEM(caCertPEM)
@@ -105,9 +99,9 @@ func ValidateIdentity(certPEM, caCertPEM []byte, expectedSPIFFEID string) (*Veri
 	caPool := x509.NewCertPool()
 	caPool.AddCert(parsedCaCert)
 
-	verifyTime := cert.NotBefore.Add(time.Second)
-	if verifyTime.After(cert.NotAfter) {
-		verifyTime = cert.NotBefore
+	verifyTime := leafCert.NotBefore.Add(time.Second)
+	if verifyTime.After(leafCert.NotAfter) {
+		verifyTime = leafCert.NotBefore
 	}
 
 	_, err = leafCert.Verify(x509.VerifyOptions{
