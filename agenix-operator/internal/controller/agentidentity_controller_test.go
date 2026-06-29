@@ -35,18 +35,20 @@ import (
 var _ = Describe("AgentIdentity Controller", func() {
 	Context("When reconciling a resource", func() {
 		const (
-			resourceNamespace = "default"
-			testApp           = "test"
-			testLabelKey      = "app"
-			testImage         = "busybox"
-			testTrustDomain   = "example.org"
-			testTTL           = "24h"
-			foundName         = "test-found"
-			foundDeployment   = "found-deployment"
-			missingName       = "test-missing"
-			missingDeployment = "does-not-exist"
-			recreateName      = "test-recreate"
-			idempotentName    = "test-idempotent"
+			resourceNamespace  = "default"
+			testApp            = "test"
+			testLabelKey       = "app"
+			testImage          = "busybox"
+			testTrustDomain    = "example.org"
+			testTTL            = "24h"
+			foundName          = "test-found"
+			foundDeployment    = "found-deployment"
+			missingName        = "test-missing"
+			missingDeployment  = "does-not-exist"
+			recreateName       = "test-recreate"
+			idempotentName     = "test-idempotent"
+			verifiedName       = "test-verified"
+			verifiedDeployment = "verified-deployment"
 		)
 
 		ctx := context.Background()
@@ -102,20 +104,13 @@ var _ = Describe("AgentIdentity Controller", func() {
 				Scheme: k8sClient.Scheme(),
 				CA:     authority,
 			}
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      foundName,
-					Namespace: resourceNamespace,
-				},
-			})
-			Expect(err).NotTo(HaveOccurred())
 
-			updated := &agentv1alpha1.AgentIdentity{}
+			updated := reconcileUntilVerified(ctx, reconciler, foundName)
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      foundName,
 				Namespace: resourceNamespace,
 			}, updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal("Provisioned"))
+			Expect(updated.Status.Phase).To(Equal("Verified"))
 			condition := meta.FindStatusCondition(updated.Status.Conditions, "TargetFound")
 			Expect(condition).NotTo(BeNil())
 			Expect(condition.Status).To(Equal(metav1.ConditionTrue))
@@ -142,6 +137,147 @@ var _ = Describe("AgentIdentity Controller", func() {
 			Expect(secret.Data).To(HaveKey("ca.crt"))
 		})
 
+		It("should set Verified phase and verification conditions after successful reconcile", func() {
+			// 1. Create Deployment
+			deployment := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      verifiedDeployment,
+					Namespace: resourceNamespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{testLabelKey: testApp},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{testLabelKey: testApp},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: testApp, Image: testImage}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, deployment) })
+
+			// 2. Create AgentIdentity
+			identity := &agentv1alpha1.AgentIdentity{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      verifiedName,
+					Namespace: resourceNamespace,
+				},
+				Spec: agentv1alpha1.AgentIdentitySpec{
+					TargetRef: agentv1alpha1.TargetRef{Name: verifiedDeployment},
+					Identity: agentv1alpha1.IdentityConfig{
+						TrustDomain: testTrustDomain,
+						TTL:         testTTL,
+						AutoRotate:  true,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, identity) })
+
+			// 3. Reconcile twice (finalizer + full flow)
+			authority, err := ca.NewCA()
+			Expect(err).NotTo(HaveOccurred())
+
+			reconciler := &AgentIdentityReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				CA:     authority,
+			}
+
+			updated := reconcileUntilVerified(ctx, reconciler, verifiedName)
+
+			// 4. Assert phase
+			Expect(updated.Status.Phase).To(Equal("Verified"))
+
+			// 5. Assert both conditions True
+			certReady := meta.FindStatusCondition(updated.Status.Conditions, conditionCertificateReady)
+			Expect(certReady).NotTo(BeNil())
+			Expect(certReady.Status).To(Equal(metav1.ConditionTrue))
+
+			identityVerified := meta.FindStatusCondition(updated.Status.Conditions, conditionIdentityVerified)
+			Expect(identityVerified).NotTo(BeNil())
+			Expect(identityVerified.Status).To(Equal(metav1.ConditionTrue))
+			Expect(identityVerified.Reason).To(Equal("SignatureValid"))
+
+			// Optional extras
+			Expect(updated.Status.AgentID).To(Equal("spiffe://example.org/ns/default/sa/default"))
+			Expect(updated.Status.Certificate).NotTo(BeNil())
+		})
+
+		It("should apply verification labels to the target Deployment", func() {
+			deploymentName := "labels-deployment"
+			identityName := "test-labels"
+
+			deployment := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: resourceNamespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{testLabelKey: testApp},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{testLabelKey: testApp},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{{Name: testApp, Image: testImage}},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, deployment) })
+
+			identity := &agentv1alpha1.AgentIdentity{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      identityName,
+					Namespace: resourceNamespace,
+				},
+				Spec: agentv1alpha1.AgentIdentitySpec{
+					TargetRef: agentv1alpha1.TargetRef{Name: deploymentName},
+					Identity: agentv1alpha1.IdentityConfig{
+						TrustDomain: testTrustDomain,
+						TTL:         testTTL,
+						AutoRotate:  true,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, identity)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, identity) })
+
+			authority, err := ca.NewCA()
+			Expect(err).NotTo(HaveOccurred())
+
+			reconciler := &AgentIdentityReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				CA:     authority,
+			}
+
+			expectedSPIFFE := "spiffe://example.org/ns/default/sa/default"
+			reconcileUntilVerified(ctx, reconciler, identityName)
+
+			// Re-fetch Deployment and check labels
+			updatedDeploy := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      deploymentName,
+				Namespace: resourceNamespace,
+			}, updatedDeploy)).To(Succeed())
+
+			Expect(updatedDeploy.Labels).To(HaveKeyWithValue(labelIdentityVerified, "true"))
+			Expect(updatedDeploy.Labels).To(HaveKeyWithValue(
+				labelAgentID,
+				SanitizeSPIFFEIDForLabel(expectedSPIFFE),
+			))
+		})
+
 		It("should set Error when Deployment is missing", func() {
 			identity := &agentv1alpha1.AgentIdentity{
 				ObjectMeta: metav1.ObjectMeta{
@@ -165,12 +301,16 @@ var _ = Describe("AgentIdentity Controller", func() {
 				Scheme: k8sClient.Scheme(),
 				CA:     authority,
 			}
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      missingName,
 					Namespace: resourceNamespace,
 				},
-			})
+			}
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = reconciler.Reconcile(ctx, req) // second pass
 			Expect(err).NotTo(HaveOccurred())
 
 			updated := &agentv1alpha1.AgentIdentity{}
@@ -236,12 +376,19 @@ var _ = Describe("AgentIdentity Controller", func() {
 				CA:     authority,
 			}
 
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      recreateName,
 					Namespace: resourceNamespace,
 				},
-			})
+			}
+
+			// Pass 1: finalizer
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Pass 2: create secret
+			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
 			secret := &corev1.Secret{}
@@ -251,12 +398,9 @@ var _ = Describe("AgentIdentity Controller", func() {
 			}, secret)).To(Succeed())
 
 			Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      recreateName,
-					Namespace: resourceNamespace,
-				},
-			})
+
+			// Pass 3: recreate secret
+			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
 			newSecret := &corev1.Secret{}
@@ -319,12 +463,19 @@ var _ = Describe("AgentIdentity Controller", func() {
 				CA:     authority,
 			}
 
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{
+			req := reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      idempotentName,
 					Namespace: resourceNamespace,
 				},
-			})
+			}
+
+			// Pass 1: finalizer
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Pass 2: provision + verify
+			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
 			updated := &agentv1alpha1.AgentIdentity{}
@@ -332,14 +483,11 @@ var _ = Describe("AgentIdentity Controller", func() {
 				Name:      idempotentName,
 				Namespace: resourceNamespace,
 			}, updated)).To(Succeed())
+			Expect(updated.Status.Certificate).NotTo(BeNil())
 			firstSerial := updated.Status.Certificate.SerialNumber
 
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{
-					Name:      idempotentName,
-					Namespace: resourceNamespace,
-				},
-			})
+			// Pass 3: should reuse existing cert, not regenerate
+			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).NotTo(HaveOccurred())
 
 			updated2 := &agentv1alpha1.AgentIdentity{}
@@ -347,9 +495,8 @@ var _ = Describe("AgentIdentity Controller", func() {
 				Name:      idempotentName,
 				Namespace: resourceNamespace,
 			}, updated2)).To(Succeed())
-			secondSerial := updated2.Status.Certificate.SerialNumber
-
-			Expect(secondSerial).To(Equal(firstSerial))
+			Expect(updated2.Status.Certificate).NotTo(BeNil())
+			Expect(updated2.Status.Certificate.SerialNumber).To(Equal(firstSerial))
 		})
 		It("should set owner reference on Secret", func() {
 			deployment := &appsv1.Deployment{
@@ -409,6 +556,7 @@ var _ = Describe("AgentIdentity Controller", func() {
 					Namespace: resourceNamespace,
 				},
 			})
+			reconcileUntilVerified(ctx, reconciler, "test-owner")
 			Expect(err).NotTo(HaveOccurred())
 
 			secret := &corev1.Secret{}
@@ -422,3 +570,26 @@ var _ = Describe("AgentIdentity Controller", func() {
 		})
 	})
 })
+
+const controllerTestNamespace = "default"
+
+// helper to reconcile a 2nd time for verified status
+func reconcileUntilVerified(
+	ctx context.Context,
+	reconciler *AgentIdentityReconciler,
+	name string,
+) *agentv1alpha1.AgentIdentity {
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: name, Namespace: controllerTestNamespace},
+	}
+
+	_, err := reconciler.Reconcile(ctx, req)
+	Expect(err).NotTo(HaveOccurred())
+
+	_, err = reconciler.Reconcile(ctx, req) // second pass: finalizer already present
+	Expect(err).NotTo(HaveOccurred())
+
+	updated := &agentv1alpha1.AgentIdentity{}
+	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: controllerTestNamespace}, updated)).To(Succeed())
+	return updated
+}
