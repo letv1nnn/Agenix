@@ -38,7 +38,6 @@ func VerifyCertificateChain(certPEM, caCertPEM []byte) error {
 	caPool := x509.NewCertPool()
 	caPool.AddCert(parsedCaCert)
 
-	// leafCert.Verify(x509.VerifyOptions{Roots: caPool})
 	_, err = leafCert.Verify(x509.VerifyOptions{Roots: caPool})
 	if err != nil {
 		return err
@@ -83,13 +82,44 @@ type VerificationResult struct {
 func ValidateIdentity(certPEM, caCertPEM []byte, expectedSPIFFEID string) (*VerificationResult, error) {
 	result := &VerificationResult{}
 
-	// calls VerifyCertificateChain
-	if err := VerifyCertificateChain(certPEM, caCertPEM); err != nil {
-		result.ChainValid = false
-		return result, fmt.Errorf("Failed to verify certificate chain")
-	} else {
-		result.ChainValid = true
+	cert, err := parseCertPEM(certPEM)
+	if err != nil {
+		return nil, err
 	}
+	result.ExpiresAt = cert.NotAfter
+	result.IsExpired = time.Now().After(cert.NotAfter)
+
+	// parse leaf cert from PEM
+	leafCert, err := parseCertPEM(certPEM)
+	if err != nil {
+		return nil, err
+	}
+
+	// parse ca certificate from pem
+	parsedCaCert, err := parseCertPEM(caCertPEM)
+	if err != nil {
+		return nil, err
+	}
+
+	// create x509.CertPool with CA cert
+	caPool := x509.NewCertPool()
+	caPool.AddCert(parsedCaCert)
+
+	verifyTime := cert.NotBefore.Add(time.Second)
+	if verifyTime.After(cert.NotAfter) {
+		verifyTime = cert.NotBefore
+	}
+
+	_, err = leafCert.Verify(x509.VerifyOptions{
+		Roots:       caPool,
+		CurrentTime: verifyTime,
+	})
+	if err != nil {
+		result.ChainValid = false
+		return result, fmt.Errorf("failed to verify certificate chain: %w", err)
+	}
+	result.ChainValid = true
+	// instead of calling VerifyCertificateChain, it now uses a modified version of the code to account for the expiry time
 
 	// calls ExtractSPIFFEID and compares with expected ID
 	extractedID, err := ExtractSPIFFEID(certPEM)
@@ -99,14 +129,6 @@ func ValidateIdentity(certPEM, caCertPEM []byte, expectedSPIFFEID string) (*Veri
 	}
 
 	result.SPIFFEIDMatch = (extractedID == expectedSPIFFEID)
-
-	// is expired?
-	cert, err := parseCertPEM(certPEM)
-	if err != nil {
-		return nil, err
-	}
-	result.ExpiresAt = cert.NotAfter
-	result.IsExpired = time.Now().After(cert.NotAfter)
 
 	// returns a VerificationResult struct with ChainValid bool, SPIFFEIDMatch bool, ExpiresAt time.Time, IsExpired bool
 	return result, nil
