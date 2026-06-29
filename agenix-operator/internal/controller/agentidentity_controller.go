@@ -128,22 +128,13 @@ func (r *AgentIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	if err := r.Get(ctx, deploymentName, deployment); err != nil {
 		if apierrors.IsNotFound(err) {
-			identity.Status.Phase = phaseError
-			SetCondition(
-				&identity.Status.Conditions,
+			return r.reportPhaseError(
+				ctx,
+				identity,
 				conditionTargetFound,
-				metav1.ConditionFalse,
 				"DeploymentNotFound",
 				fmt.Sprintf("Deployment %q not found in namespace %q", identity.Spec.TargetRef.Name, req.Namespace),
 			)
-			if err := r.Status().Update(ctx, identity); err != nil {
-				return ctrl.Result{}, err
-			}
-			if labelErr := r.removeVerificationLabels(ctx, identity); labelErr != nil {
-				logger.Error(labelErr, "Failed to remove verification labels")
-				return ctrl.Result{}, labelErr
-			}
-			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
 	}
@@ -171,22 +162,13 @@ func (r *AgentIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	)
 	if err != nil {
 		logger.Error(err, "Failed to generate SPIFFE ID")
-		identity.Status.Phase = phaseError
-		SetCondition(
-			&identity.Status.Conditions,
+		return r.reportPhaseError(
+			ctx,
+			identity,
 			conditionCertificateReady,
-			metav1.ConditionFalse,
 			"InvalidSPIFFEID",
 			fmt.Sprintf("Failed to generate SPIFFE ID: %v", err),
 		)
-		if statusErr := r.Status().Update(ctx, identity); statusErr != nil {
-			return ctrl.Result{}, statusErr
-		}
-		if labelErr := r.removeVerificationLabels(ctx, identity); labelErr != nil {
-			logger.Error(labelErr, "Failed to remove verification labels")
-			return ctrl.Result{}, labelErr
-		}
-		return ctrl.Result{}, nil
 	}
 	logger.Info("SPIFFE ID generated", "spiffeID", spiffeID)
 
@@ -196,64 +178,8 @@ func (r *AgentIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		Namespace: identity.Namespace,
 	}, existingSecret)
 	if err == nil {
-		block, _ := pem.Decode(existingSecret.Data["tls.crt"])
-		if block != nil {
-			existingCert, parseErr := x509.ParseCertificate(block.Bytes)
-			if parseErr == nil {
-				fingerprint, fpErr := certutil.ComputeFingerprint(existingSecret.Data["tls.crt"])
-				if fpErr != nil {
-					return ctrl.Result{}, fpErr
-				}
-
-				certInfo := &agentv1alpha1.CertificateInfo{
-					SerialNumber: existingCert.SerialNumber.Text(16),
-					NotBefore:    metav1.NewTime(existingCert.NotBefore),
-					NotAfter:     metav1.NewTime(existingCert.NotAfter),
-					Fingerprint:  fingerprint,
-				}
-
-				caCertPEM := existingSecret.Data["ca.crt"]
-				if len(caCertPEM) == 0 {
-					logger.Error(nil, "Secret missing ca.crt", "secret", existingSecret.Name)
-					identity.Status.Phase = phaseError
-					identity.Status.AgentID = spiffeID
-					SetCondition(
-						&identity.Status.Conditions,
-						conditionCertificateReady,
-						metav1.ConditionFalse,
-						"MissingCACertificate",
-						fmt.Sprintf("Secret %q is missing ca.crt", existingSecret.Name),
-					)
-					if statusErr := r.Status().Update(ctx, identity); statusErr != nil {
-						return ctrl.Result{}, statusErr
-					}
-					if labelErr := r.removeVerificationLabels(ctx, identity); labelErr != nil {
-						return ctrl.Result{}, labelErr
-					}
-					return ctrl.Result{}, nil
-				}
-
-				if time.Now().Before(existingCert.NotAfter) {
-					// if valid dont regenerate
-					logger.Info("Certificate still valid, skipping regeneration", "notAfter", existingCert.NotAfter)
-					SetCondition(
-						&identity.Status.Conditions,
-						conditionCertificateReady,
-						metav1.ConditionTrue,
-						"CertificateIssued",
-						fmt.Sprintf("X.509 certificate stored in Secret %s-tls", identity.Name),
-					)
-					return r.verifyAndUpdateStatus(ctx, identity, existingSecret.Data["tls.crt"], caCertPEM, spiffeID, certInfo)
-				}
-
-				// if expired
-				if identity.Spec.Identity.AutoRotate {
-					logger.Info("Certificate expired, regenerating", "notAfter", existingCert.NotAfter)
-				} else {
-					logger.Info("Certificate expired, reporting expired status", "notAfter", existingCert.NotAfter)
-					return r.verifyAndUpdateStatus(ctx, identity, existingSecret.Data["tls.crt"], caCertPEM, spiffeID, certInfo)
-				}
-			}
+		if result, handled, handleErr := r.reconcileExistingSecret(ctx, identity, existingSecret, spiffeID); handled {
+			return result, handleErr
 		}
 	} else if !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
@@ -262,42 +188,24 @@ func (r *AgentIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	ttl, err := time.ParseDuration(identity.Spec.Identity.TTL)
 	if err != nil {
 		logger.Error(err, "Failed to parse TTL", "ttl", identity.Spec.Identity.TTL)
-		identity.Status.Phase = phaseError
-		SetCondition(
-			&identity.Status.Conditions,
+		return r.reportPhaseError(
+			ctx,
+			identity,
 			conditionCertificateReady,
-			metav1.ConditionFalse,
 			"InvalidTTL",
 			fmt.Sprintf("Failed to parse TTL %q: %v", identity.Spec.Identity.TTL, err),
 		)
-		if statusErr := r.Status().Update(ctx, identity); statusErr != nil {
-			return ctrl.Result{}, statusErr
-		}
-		if labelErr := r.removeVerificationLabels(ctx, identity); labelErr != nil {
-			logger.Error(labelErr, "Failed to remove verification labels")
-			return ctrl.Result{}, labelErr
-		}
-		return ctrl.Result{}, nil
 	}
 	bundle, err := certutil.GenerateAgentCertificate(r.CA, spiffeID, ttl)
 	if err != nil {
 		logger.Error(err, "Failed to generate certificate")
-		identity.Status.Phase = phaseError
-		SetCondition(
-			&identity.Status.Conditions,
+		return r.reportPhaseError(
+			ctx,
+			identity,
 			conditionCertificateReady,
-			metav1.ConditionFalse,
 			"CertificateGenerationFailed",
 			fmt.Sprintf("Failed to generate certificate: %v", err),
 		)
-		if statusErr := r.Status().Update(ctx, identity); statusErr != nil {
-			return ctrl.Result{}, statusErr
-		}
-		if labelErr := r.removeVerificationLabels(ctx, identity); labelErr != nil {
-			logger.Error(labelErr, "Failed to remove verification labels")
-			return ctrl.Result{}, labelErr
-		}
-		return ctrl.Result{}, nil
 	}
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -345,6 +253,99 @@ func (r *AgentIdentityReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		spiffeID,
 		certInfo,
 	)
+}
+
+func (r *AgentIdentityReconciler) reportPhaseError(
+	// helper extracted by Cursor to fix lint issues
+	ctx context.Context,
+	identity *agentv1alpha1.AgentIdentity,
+	conditionType, reason, message string,
+) (ctrl.Result, error) {
+	logger := logf.FromContext(ctx)
+	identity.Status.Phase = phaseError
+	SetCondition(
+		&identity.Status.Conditions,
+		conditionType,
+		metav1.ConditionFalse,
+		reason,
+		message,
+	)
+	if err := r.Status().Update(ctx, identity); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.removeVerificationLabels(ctx, identity); err != nil {
+		logger.Error(err, "Failed to remove verification labels")
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *AgentIdentityReconciler) reconcileExistingSecret(
+	// helper extracted by Cursor to fix lint issues
+	ctx context.Context,
+	identity *agentv1alpha1.AgentIdentity,
+	secret *corev1.Secret,
+	spiffeID string,
+) (ctrl.Result, bool, error) {
+	logger := logf.FromContext(ctx)
+
+	block, _ := pem.Decode(secret.Data["tls.crt"])
+	if block == nil {
+		return ctrl.Result{}, false, nil
+	}
+
+	existingCert, parseErr := x509.ParseCertificate(block.Bytes)
+	if parseErr != nil {
+		return ctrl.Result{}, false, nil
+	}
+
+	fingerprint, fpErr := certutil.ComputeFingerprint(secret.Data["tls.crt"])
+	if fpErr != nil {
+		return ctrl.Result{}, true, fpErr
+	}
+
+	certInfo := &agentv1alpha1.CertificateInfo{
+		SerialNumber: existingCert.SerialNumber.Text(16),
+		NotBefore:    metav1.NewTime(existingCert.NotBefore),
+		NotAfter:     metav1.NewTime(existingCert.NotAfter),
+		Fingerprint:  fingerprint,
+	}
+
+	caCertPEM := secret.Data["ca.crt"]
+	if len(caCertPEM) == 0 {
+		logger.Error(nil, "Secret missing ca.crt", "secret", secret.Name)
+		identity.Status.AgentID = spiffeID
+		result, err := r.reportPhaseError(
+			ctx,
+			identity,
+			conditionCertificateReady,
+			"MissingCACertificate",
+			fmt.Sprintf("Secret %q is missing ca.crt", secret.Name),
+		)
+		return result, true, err
+	}
+
+	if time.Now().Before(existingCert.NotAfter) {
+		logger.Info("Certificate still valid, skipping regeneration", "notAfter", existingCert.NotAfter)
+		SetCondition(
+			&identity.Status.Conditions,
+			conditionCertificateReady,
+			metav1.ConditionTrue,
+			"CertificateIssued",
+			fmt.Sprintf("X.509 certificate stored in Secret %s-tls", identity.Name),
+		)
+		result, err := r.verifyAndUpdateStatus(ctx, identity, secret.Data["tls.crt"], caCertPEM, spiffeID, certInfo)
+		return result, true, err
+	}
+
+	if identity.Spec.Identity.AutoRotate {
+		logger.Info("Certificate expired, regenerating", "notAfter", existingCert.NotAfter)
+		return ctrl.Result{}, false, nil
+	}
+
+	logger.Info("Certificate expired, reporting expired status", "notAfter", existingCert.NotAfter)
+	result, err := r.verifyAndUpdateStatus(ctx, identity, secret.Data["tls.crt"], caCertPEM, spiffeID, certInfo)
+	return result, true, err
 }
 
 func (r *AgentIdentityReconciler) handleDeletion(ctx context.Context, ai *agentv1alpha1.AgentIdentity) (ctrl.Result, error) {
