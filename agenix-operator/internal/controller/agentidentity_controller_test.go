@@ -27,7 +27,7 @@ import (
 	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	agentv1alpha1 "github.com/Bobbins228/Agenix/agenix-operator/api/v1alpha1"
@@ -620,7 +620,7 @@ var _ = Describe("AgentIdentity Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				CA:       authority,
-				Recorder: record.NewFakeRecorder(10),
+				Recorder: events.NewFakeRecorder(10),
 			}
 		}
 
@@ -1021,7 +1021,7 @@ var _ = Describe("AgentIdentity Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				CA:       authority,
-				Recorder: record.NewFakeRecorder(10),
+				Recorder: events.NewFakeRecorder(10),
 			}
 		}
 

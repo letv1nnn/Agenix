@@ -31,7 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -61,7 +61,7 @@ type AgentIdentityReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	CA       *ca.CA
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 }
 
 // helper to sanitize spiffe id for use in labels (replace "://", "/", with "-")
@@ -357,7 +357,7 @@ func (r *AgentIdentityReconciler) handleDeletion(ctx context.Context, ai *agentv
 	if err == nil {
 		if err := r.Delete(ctx, secret); err != nil && !apierrors.IsNotFound(err) {
 			logger.Error(err, "Failed to delete TLS Secret", "secret", secretName)
-			r.Recorder.Event(ai, "Warning", "CleanupFailed", "Failed to delete TLS Secret: "+err.Error())
+			r.Recorder.Eventf(ai, nil, "Warning", "CleanupFailed", "Cleanup", "Failed to delete TLS Secret: "+err.Error())
 			return ctrl.Result{}, err
 		}
 		logger.Info("Deleted TLS Secret", "secret", secretName)
@@ -368,14 +368,14 @@ func (r *AgentIdentityReconciler) handleDeletion(ctx context.Context, ai *agentv
 	// 2. Remove identity labels from Deployment
 	if err := r.removeVerificationLabels(ctx, ai); err != nil {
 		logger.Error(err, "Failed to remove verification labels")
-		r.Recorder.Event(ai, "Warning", "CleanupFailed", "Failed to remove identity labels: "+err.Error())
+		r.Recorder.Eventf(ai, nil, "Warning", "CleanupFailed", "Cleanup", "Failed to remove identity labels: "+err.Error())
 		return ctrl.Result{}, err
 	}
 
 	// 3. Delete target Deployment
 	if err := r.deleteTargetDeployment(ctx, ai); err != nil {
 		logger.Error(err, "Failed to delete target Deployment")
-		r.Recorder.Event(ai, "Warning", "CleanupFailed", "Failed to delete Deployment: "+err.Error())
+		r.Recorder.Eventf(ai, nil, "Warning", "CleanupFailed", "Cleanup", "Failed to delete Deployment: "+err.Error())
 		return ctrl.Result{}, err
 	}
 

@@ -193,7 +193,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		CA:       authority,
-		Recorder: mgr.GetEventRecorderFor("agentidentity-controller"),
+		Recorder: mgr.GetEventRecorder("agentidentity-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "agentidentity")
 		os.Exit(1)
