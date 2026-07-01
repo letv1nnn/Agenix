@@ -49,6 +49,7 @@ const (
 	phaseVerified             = "Verified"
 	labelIdentityVerified     = "agenix.io/identity-verified"
 	labelAgentID              = "agenix.io/agent-id"
+	annotationCertFingerprint = "agenix.io/cert-fingerprint"
 	conditionCertificateReady = "CertificateReady"
 	conditionIdentityVerified = "IdentityVerified"
 	conditionTargetFound      = "TargetFound"
@@ -505,7 +506,12 @@ func (r *AgentIdentityReconciler) verifyAndUpdateStatus(
 	if err := r.applyVerificationLabels(ctx, identity, expectedSPIFFEID); err != nil {
 		logger.Error(err, "Failed to apply verification labels")
 		return ctrl.Result{}, err
-	} // apply the labels
+	}
+
+	if err := r.triggerIdentityRollout(ctx, identity, certInfo.Fingerprint); err != nil {
+		logger.Error(err, "Failed to trigger identity rollout")
+		return ctrl.Result{}, err
+	}
 
 	requeueAfter := time.Until(result.ExpiresAt) * 2 / 3
 	if requeueAfter <= 0 {
@@ -541,6 +547,38 @@ func (r *AgentIdentityReconciler) applyVerificationLabels(
 	}
 	deployment.Labels[labelIdentityVerified] = "true"
 	deployment.Labels[labelAgentID] = sanitized
+
+	return r.Update(ctx, deployment)
+}
+
+// triggerIdentityRollout patches the Deployment pod template so Kubernetes
+// recreates pods and the mutating webhook can inject identity material.
+func (r *AgentIdentityReconciler) triggerIdentityRollout(
+	ctx context.Context,
+	identity *agentv1alpha1.AgentIdentity,
+	fingerprint string,
+) error {
+	if fingerprint == "" {
+		return nil
+	}
+
+	deployment, err := r.getTargetDeployment(ctx, identity)
+	if err != nil {
+		return err
+	}
+	if deployment == nil {
+		return nil
+	}
+
+	if deployment.Spec.Template.Annotations != nil &&
+		deployment.Spec.Template.Annotations[annotationCertFingerprint] == fingerprint {
+		return nil
+	}
+
+	if deployment.Spec.Template.Annotations == nil {
+		deployment.Spec.Template.Annotations = map[string]string{}
+	}
+	deployment.Spec.Template.Annotations[annotationCertFingerprint] = fingerprint
 
 	return r.Update(ctx, deployment)
 }
