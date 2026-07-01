@@ -1,4 +1,6 @@
 ## Append samples of your project ##
 resources:
+- weather-agent-serviceaccount.yaml
+- test-agent-deployment.yaml
 - agent_v1alpha1_agentidentity.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
